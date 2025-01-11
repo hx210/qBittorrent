@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="${LANG}">
+<html lang="${LANG}" class="dark">
 
 <head>
     <meta charset="UTF-8">
@@ -7,29 +7,26 @@
     <link rel="stylesheet" href="css/style.css?v=${CACHEID}" type="text/css">
     <script src="scripts/lib/MooTools-Core-1.6.0-compat-compressed.js"></script>
     <script src="scripts/lib/MooTools-More-1.6.0-compat-compressed.js"></script>
+    <script src="scripts/localpreferences.js?v=${CACHEID}"></script>
+    <script src="scripts/color-scheme.js?v=${CACHEID}"></script>
     <script src="scripts/misc.js?locale=${LANG}&v=${CACHEID}"></script>
     <script>
         "use strict";
 
-        new Keyboard({
-            defaultEventType: "keydown",
-            events: {
-                "Enter": function(event) {
-                    $("renameButton").click();
-                    event.preventDefault();
-                },
-                "Escape": function(event) {
-                    window.parent.qBittorrent.Client.closeWindows();
-                    event.preventDefault();
-                },
-                "Esc": function(event) {
-                    window.parent.qBittorrent.Client.closeWindows();
-                    event.preventDefault();
-                }
-            }
-        }).activate();
-
         window.addEventListener("DOMContentLoaded", () => {
+            window.addEventListener("keydown", (event) => {
+                switch (event.key) {
+                    case "Enter":
+                        event.preventDefault();
+                        $("renameButton").click();
+                        break;
+                    case "Escape":
+                        event.preventDefault();
+                        window.parent.qBittorrent.Client.closeFrameWindow(window);
+                        break;
+                }
+            });
+
             const name = new URI().getData("name");
             // set text field to current value
             if (name)
@@ -47,17 +44,19 @@
 
                 const hash = new URI().getData("hash");
                 if (hash) {
-                    new Request({
-                        url: "api/v2/torrents/rename",
-                        method: "post",
-                        data: {
-                            hash: hash,
-                            name: name
-                        },
-                        onComplete: () => {
-                            window.parent.qBittorrent.Client.closeWindows();
-                        }
-                    }).send();
+                    fetch("api/v2/torrents/rename", {
+                            method: "POST",
+                            body: new URLSearchParams({
+                                hash: hash,
+                                name: name
+                            })
+                        })
+                        .then((response) => {
+                            if (!response.ok)
+                                return;
+
+                            window.parent.qBittorrent.Client.closeFrameWindow(window);
+                        });
                 }
             });
         });

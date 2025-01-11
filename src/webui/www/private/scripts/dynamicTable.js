@@ -64,7 +64,7 @@ window.qBittorrent.DynamicTable ??= (() => {
     };
 
     let DynamicTableHeaderContextMenuClass = null;
-    let ProgressColumnWidth = -1;
+    let progressColumnWidth = -1;
 
     const DynamicTable = new Class({
 
@@ -73,6 +73,7 @@ window.qBittorrent.DynamicTable ??= (() => {
         setup: function(dynamicTableDivId, dynamicTableFixedHeaderDivId, contextMenu) {
             this.dynamicTableDivId = dynamicTableDivId;
             this.dynamicTableFixedHeaderDivId = dynamicTableFixedHeaderDivId;
+            this.dynamicTableDiv = document.getElementById(dynamicTableDivId);
             this.fixedTableHeader = $(dynamicTableFixedHeaderDivId).getElements("tr")[0];
             this.hiddenTableHeader = $(dynamicTableDivId).getElements("tr")[0];
             this.tableBody = $(dynamicTableDivId).getElements("tbody")[0];
@@ -93,40 +94,82 @@ window.qBittorrent.DynamicTable ??= (() => {
         },
 
         setupCommonEvents: function() {
-            const tableDiv = $(this.dynamicTableDivId);
             const tableFixedHeaderDiv = $(this.dynamicTableFixedHeaderDivId);
 
             const tableElement = tableFixedHeaderDiv.querySelector("table");
-            tableDiv.addEventListener("scroll", () => {
-                tableElement.style.left = `${-tableDiv.scrollLeft}px`;
+            this.dynamicTableDiv.addEventListener("scroll", function() {
+                tableElement.style.left = `${-this.scrollLeft}px`;
             });
 
-            // if the table exists within a panel
-            const parentPanel = tableDiv.getParent(".panel");
-            if (parentPanel) {
-                const resizeFn = (entries) => {
-                    const panel = entries[0].target;
-                    let h = panel.getBoundingClientRect().height - tableFixedHeaderDiv.getBoundingClientRect().height;
-                    tableDiv.style.height = `${h}px`;
+            this.dynamicTableDiv.addEventListener("click", (e) => {
+                const tr = e.target.closest("tr");
+                if (!tr) {
+                    // clicking on the table body deselects all rows
+                    this.deselectAll();
+                    this.setRowClass();
+                    return;
+                }
 
-                    // Workaround due to inaccurate calculation of elements heights by browser
-                    let n = 2;
+                if (e.ctrlKey || e.metaKey) {
+                    // CTRL/CMD ⌘ key was pressed
+                    if (this.isRowSelected(tr.rowId))
+                        this.deselectRow(tr.rowId);
+                    else
+                        this.selectRow(tr.rowId);
+                }
+                else if (e.shiftKey && (this.selectedRows.length === 1)) {
+                    // Shift key was pressed
+                    this.selectRows(this.getSelectedRowId(), tr.rowId);
+                }
+                else {
+                    // Simple selection
+                    this.deselectAll();
+                    this.selectRow(tr.rowId);
+                }
+            });
 
-                    // is panel vertical scrollbar visible or does panel content not fit?
-                    while (((panel.clientWidth !== panel.offsetWidth) || (panel.clientHeight !== panel.scrollHeight)) && (n > 0)) {
-                        --n;
-                        h -= 0.5;
-                        tableDiv.style.height = `${h}px`;
+            this.dynamicTableDiv.addEventListener("contextmenu", (e) => {
+                const tr = e.target.closest("tr");
+                if (!tr)
+                    return;
+
+                if (!this.isRowSelected(tr.rowId)) {
+                    this.deselectAll();
+                    this.selectRow(tr.rowId);
+                }
+            }, true);
+
+            this.dynamicTableDiv.addEventListener("touchstart", (e) => {
+                const tr = e.target.closest("tr");
+                if (!tr)
+                    return;
+
+                if (!this.isRowSelected(tr.rowId)) {
+                    this.deselectAll();
+                    this.selectRow(tr.rowId);
+                }
+            }, { passive: true });
+
+            this.dynamicTableDiv.addEventListener("keydown", (e) => {
+                const tr = e.target.closest("tr");
+                if (!tr)
+                    return;
+
+                switch (e.key) {
+                    case "ArrowUp": {
+                        e.preventDefault();
+                        this.selectPreviousRow();
+                        this.dynamicTableDiv.querySelector(".selected").scrollIntoView({ block: "nearest" });
+                        break;
                     }
-                };
-
-                const resizeDebouncer = window.qBittorrent.Misc.createDebounceHandler(100, (entries) => {
-                    resizeFn(entries);
-                });
-
-                const resizeObserver = new ResizeObserver(resizeDebouncer);
-                resizeObserver.observe(parentPanel, { box: "border-box" });
-            }
+                    case "ArrowDown": {
+                        e.preventDefault();
+                        this.selectNextRow();
+                        this.dynamicTableDiv.querySelector(".selected").scrollIntoView({ block: "nearest" });
+                        break;
+                    }
+                }
+            });
         },
 
         setupHeaderEvents: function() {
@@ -147,16 +190,16 @@ window.qBittorrent.DynamicTable ??= (() => {
                     if ((brect.width - mouseXRelative) < 5) {
                         this.resizeTh = e.target;
                         this.canResize = true;
-                        e.target.getParent("tr").style.cursor = "col-resize";
+                        e.target.closest("tr").style.cursor = "col-resize";
                     }
                     else if ((mouseXRelative < 5) && e.target.getPrevious('[class=""]')) {
                         this.resizeTh = e.target.getPrevious('[class=""]');
                         this.canResize = true;
-                        e.target.getParent("tr").style.cursor = "col-resize";
+                        e.target.closest("tr").style.cursor = "col-resize";
                     }
                     else {
                         this.canResize = false;
-                        e.target.getParent("tr").style.cursor = "";
+                        e.target.closest("tr").style.cursor = "";
                     }
                 }
                 if (this.currentHeaderAction === "drag") {
@@ -172,7 +215,7 @@ window.qBittorrent.DynamicTable ??= (() => {
                         this.dropSide = "left";
                     }
 
-                    e.target.getParent("tr").style.cursor = "move";
+                    e.target.closest("tr").style.cursor = "move";
 
                     if (!previousVisibleSibling) { // right most column
                         borderChangeElement = e.target;
@@ -181,11 +224,15 @@ window.qBittorrent.DynamicTable ??= (() => {
                             changeBorderSide = "left";
                     }
 
-                    const borderStyle = "initial solid #e60";
-                    if (changeBorderSide === "left")
+                    const borderStyle = "solid #e60";
+                    if (changeBorderSide === "left") {
                         borderChangeElement.style.borderLeft = borderStyle;
-                    else
+                        borderChangeElement.style.borderLeftWidth = "initial";
+                    }
+                    else {
                         borderChangeElement.style.borderRight = borderStyle;
+                        borderChangeElement.style.borderRightWidth = "initial";
+                    }
 
                     resetElementBorderStyle(borderChangeElement, ((changeBorderSide === "right") ? "left" : "right"));
 
@@ -245,8 +292,7 @@ window.qBittorrent.DynamicTable ??= (() => {
                     LocalPreferences.set("columns_order_" + this.dynamicTableDivId, val.join(","));
                     this.loadColumnsOrder();
                     this.updateTableHeaders();
-                    while (this.tableBody.firstChild)
-                        this.tableBody.removeChild(this.tableBody.firstChild);
+                    this.tableBody.replaceChildren();
                     this.updateTable(true);
                 }
                 if (this.currentHeaderAction === "drag") {
@@ -387,10 +433,12 @@ window.qBittorrent.DynamicTable ??= (() => {
             const menuId = this.dynamicTableDivId + "_headerMenu";
 
             // reuse menu if already exists
-            const ul = $(menuId) ?? new Element("ul", {
-                id: menuId,
-                class: "contextMenu scrollableMenu"
-            });
+            let ul = document.getElementById(menuId);
+            if (ul === null) {
+                ul = document.createElement("ul");
+                ul.id = menuId;
+                ul.className = "contextMenu scrollableMenu";
+            }
 
             const createLi = (columnName, text) => {
                 const anchor = document.createElement("a");
@@ -422,11 +470,8 @@ window.qBittorrent.DynamicTable ??= (() => {
                 this.showColumn(action, this.columns[action].visible === "0");
             }.bind(this);
 
-            // recreate child nodes when reusing (enables the context menu to work correctly)
-            if (ul.hasChildNodes()) {
-                while (ul.firstChild)
-                    ul.removeChild(ul.lastChild);
-            }
+            // recreate child elements when reusing (enables the context menu to work correctly)
+            ul.replaceChildren();
 
             for (let i = 0; i < this.columns.length; ++i) {
                 const text = this.columns[i].caption;
@@ -453,10 +498,10 @@ window.qBittorrent.DynamicTable ??= (() => {
             const autoResizeAllElement = createResizeElement("Resize All", "#autoResizeAllAction");
             const autoResizeElement = createResizeElement("Resize", "#autoResizeAction");
 
-            ul.firstChild.classList.add("separator");
-            ul.insertBefore(autoResizeAllElement, ul.firstChild);
-            ul.insertBefore(autoResizeElement, ul.firstChild);
-            ul.inject(document.body);
+            ul.firstElementChild.classList.add("separator");
+            ul.insertBefore(autoResizeAllElement, ul.firstElementChild);
+            ul.insertBefore(autoResizeElement, ul.firstElementChild);
+            document.body.append(ul);
 
             this.headerContextMenu = new DynamicTableHeaderContextMenuClass({
                 targets: "#" + this.dynamicTableFixedHeaderDivId + " tr th",
@@ -506,8 +551,8 @@ window.qBittorrent.DynamicTable ??= (() => {
             this.columns.push(column);
             this.columns[name] = column;
 
-            this.hiddenTableHeader.appendChild(new Element("th"));
-            this.fixedTableHeader.appendChild(new Element("th"));
+            this.hiddenTableHeader.append(document.createElement("th"));
+            this.fixedTableHeader.append(document.createElement("th"));
         },
 
         loadColumnsOrder: function() {
@@ -554,11 +599,8 @@ window.qBittorrent.DynamicTable ??= (() => {
                 th.textContent = this.columns[i].caption;
                 th.setAttribute("style", "width: " + this.columns[i].width + "px;" + this.columns[i].style);
                 th.columnName = this.columns[i].name;
-                th.addClass("column_" + th.columnName);
-                if ((this.columns[i].visible === "0") || this.columns[i].force_hide)
-                    th.addClass("invisible");
-                else
-                    th.removeClass("invisible");
+                th.classList.add("column_" + th.columnName);
+                th.classList.toggle("invisible", ((this.columns[i].visible === "0") || this.columns[i].force_hide));
             }
         },
 
@@ -582,16 +624,16 @@ window.qBittorrent.DynamicTable ??= (() => {
             fths[pos].setAttribute("style", style);
 
             if (visible) {
-                ths[pos].removeClass("invisible");
-                fths[pos].removeClass("invisible");
+                ths[pos].classList.remove("invisible");
+                fths[pos].classList.remove("invisible");
                 for (let i = 0; i < trs.length; ++i)
-                    trs[i].getElements("td")[pos].removeClass("invisible");
+                    trs[i].getElements("td")[pos].classList.remove("invisible");
             }
             else {
-                ths[pos].addClass("invisible");
-                fths[pos].addClass("invisible");
+                ths[pos].classList.add("invisible");
+                fths[pos].classList.add("invisible");
                 for (let j = 0; j < trs.length; ++j)
-                    trs[j].getElements("td")[pos].addClass("invisible");
+                    trs[j].getElements("td")[pos].classList.add("invisible");
             }
             if (this.columns[pos].onResize !== null)
                 this.columns[pos].onResize(columnName);
@@ -632,16 +674,13 @@ window.qBittorrent.DynamicTable ??= (() => {
 
             const colElem = getCol(this.dynamicTableFixedHeaderDivId, newColumn);
             if (colElem !== null) {
-                colElem.addClass("sorted");
-                if (isReverse)
-                    colElem.addClass("reverse");
-                else
-                    colElem.removeClass("reverse");
+                colElem.classList.add("sorted");
+                colElem.classList.toggle("reverse", isReverse);
             }
             const oldColElem = getCol(this.dynamicTableFixedHeaderDivId, oldColumn);
             if (oldColElem !== null) {
-                oldColElem.removeClass("sorted");
-                oldColElem.removeClass("reverse");
+                oldColElem.classList.remove("sorted");
+                oldColElem.classList.remove("reverse");
             }
         },
 
@@ -668,8 +707,7 @@ window.qBittorrent.DynamicTable ??= (() => {
             for (let i = 0; i < trs.length; ++i) {
                 const tr = trs[i];
                 this.selectedRows.push(tr.rowId);
-                if (!tr.hasClass("selected"))
-                    tr.addClass("selected");
+                tr.classList.add("selected");
             }
         },
 
@@ -716,18 +754,13 @@ window.qBittorrent.DynamicTable ??= (() => {
             this.selectedRows = rowIds.slice();
             this.tableBody.getElements("tr").each((tr) => {
                 if (rowIds.includes(tr.rowId))
-                    tr.addClass("selected");
+                    tr.classList.add("selected");
             });
         },
 
         setRowClass: function() {
-            const that = this;
-            this.tableBody.getElements("tr").each((tr) => {
-                if (that.isRowSelected(tr.rowId))
-                    tr.addClass("selected");
-                else
-                    tr.removeClass("selected");
-            });
+            for (const tr of this.tableBody.querySelectorAll("tr"))
+                tr.classList.toggle("selected", this.isRowSelected(tr.rowId));
         },
 
         onSelectedRowChanged: () => {},
@@ -739,8 +772,8 @@ window.qBittorrent.DynamicTable ??= (() => {
 
             if (!this.rows.has(rowId)) {
                 row = {
-                    "full_data": {},
-                    "rowId": rowId
+                    full_data: {},
+                    rowId: rowId
                 };
                 this.rows.set(rowId, row);
             }
@@ -819,7 +852,7 @@ window.qBittorrent.DynamicTable ??= (() => {
                     this.updateRow(trs[rowPos], fullUpdate);
                 }
                 else { // else create a new row in the table
-                    const tr = new Element("tr");
+                    const tr = document.createElement("tr");
                     // set tabindex so element receives keydown events
                     // more info: https://developer.mozilla.org/en-US/docs/Web/API/Element/keydown_event
                     tr.tabIndex = -1;
@@ -828,60 +861,11 @@ window.qBittorrent.DynamicTable ??= (() => {
                     tr.setAttribute("data-row-id", rowId);
                     tr["rowId"] = rowId;
 
-                    tr._this = this;
-                    tr.addEventListener("contextmenu", function(e) {
-                        if (!this._this.isRowSelected(this.rowId)) {
-                            this._this.deselectAll();
-                            this._this.selectRow(this.rowId);
-                        }
-                        return true;
-                    });
-                    tr.addEventListener("click", function(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-
-                        if (e.ctrlKey || e.metaKey) {
-                            // CTRL/CMD ⌘ key was pressed
-                            if (this._this.isRowSelected(this.rowId))
-                                this._this.deselectRow(this.rowId);
-                            else
-                                this._this.selectRow(this.rowId);
-                        }
-                        else if (e.shiftKey && (this._this.selectedRows.length === 1)) {
-                            // Shift key was pressed
-                            this._this.selectRows(this._this.getSelectedRowId(), this.rowId);
-                        }
-                        else {
-                            // Simple selection
-                            this._this.deselectAll();
-                            this._this.selectRow(this.rowId);
-                        }
-                        return false;
-                    });
-                    tr.addEventListener("touchstart", function(e) {
-                        if (!this._this.isRowSelected(this.rowId)) {
-                            this._this.deselectAll();
-                            this._this.selectRow(this.rowId);
-                        }
-                    }, { passive: true });
-                    tr.addEventListener("keydown", function(event) {
-                        switch (event.key) {
-                            case "ArrowUp":
-                                this._this.selectPreviousRow();
-                                return false;
-                            case "ArrowDown":
-                                this._this.selectNextRow();
-                                return false;
-                        }
-                    });
-
-                    this.setupTr(tr);
-
                     for (let k = 0; k < this.columns.length; ++k) {
-                        const td = new Element("td");
+                        const td = document.createElement("td");
                         if ((this.columns[k].visible === "0") || this.columns[k].force_hide)
-                            td.addClass("invisible");
-                        td.injectInside(tr);
+                            td.classList.add("invisible");
+                        tr.append(td);
                     }
 
                     // Insert
@@ -895,8 +879,7 @@ window.qBittorrent.DynamicTable ??= (() => {
                     }
 
                     // Update context menu
-                    if (this.contextMenu)
-                        this.contextMenu.addTarget(tr);
+                    this.contextMenu?.addTarget(tr);
 
                     this.updateRow(tr, true);
                 }
@@ -907,8 +890,6 @@ window.qBittorrent.DynamicTable ??= (() => {
             while ((rowPos < trs.length) && (trs.length > 0))
                 trs.pop().destroy();
         },
-
-        setupTr: (tr) => {},
 
         updateRow: function(tr, fullUpdate) {
             const row = this.rows.get(tr.rowId);
@@ -1125,11 +1106,11 @@ window.qBittorrent.DynamicTable ??= (() => {
                     }
                 }
                 else {
-                    td.adopt(new Element("img", {
-                        "src": img_path,
-                        "class": "stateIcon",
-                        "title": state
-                    }));
+                    const img = document.createElement("img");
+                    img.src = img_path;
+                    img.className = "stateIcon";
+                    img.title = state;
+                    td.append(img);
                 }
             };
 
@@ -1250,16 +1231,16 @@ window.qBittorrent.DynamicTable ??= (() => {
                     const div = td.getChildren("div")[0];
                     if (td.resized) {
                         td.resized = false;
-                        div.setWidth(ProgressColumnWidth - 5);
+                        div.setWidth(progressColumnWidth - 5);
                     }
                     if (div.getValue() !== progressFormatted)
                         div.setValue(progressFormatted);
                 }
                 else {
-                    if (ProgressColumnWidth < 0)
-                        ProgressColumnWidth = td.offsetWidth;
-                    td.adopt(new window.qBittorrent.ProgressBar.ProgressBar(progressFormatted.toFloat(), {
-                        "width": ProgressColumnWidth - 5
+                    if (progressColumnWidth < 0)
+                        progressColumnWidth = td.offsetWidth;
+                    td.append(new window.qBittorrent.ProgressBar.ProgressBar(progressFormatted.toFloat(), {
+                        width: progressColumnWidth - 5
                     }));
                     td.resized = false;
                 }
@@ -1268,11 +1249,11 @@ window.qBittorrent.DynamicTable ??= (() => {
             this.columns["progress"].onResize = function(columnName) {
                 const pos = this.getColumnPos(columnName);
                 const trs = this.tableBody.getElements("tr");
-                ProgressColumnWidth = -1;
+                progressColumnWidth = -1;
                 for (let i = 0; i < trs.length; ++i) {
                     const td = trs[i].getElements("td")[pos];
-                    if (ProgressColumnWidth < 0)
-                        ProgressColumnWidth = td.offsetWidth;
+                    if (progressColumnWidth < 0)
+                        progressColumnWidth = td.offsetWidth;
                     td.resized = true;
                     this.columns[columnName].updateTd(td, this.rows.get(trs[i].rowId));
                 }
@@ -1470,7 +1451,7 @@ window.qBittorrent.DynamicTable ??= (() => {
             };
         },
 
-        applyFilter: (row, filterName, categoryHash, tagHash, trackerHash, filterTerms) => {
+        applyFilter: (row, filterName, category, tag, tracker, filterTerms) => {
             const state = row["full_data"].state;
             let inactive = false;
 
@@ -1534,59 +1515,64 @@ window.qBittorrent.DynamicTable ??= (() => {
                     break;
             }
 
-            switch (categoryHash) {
+            switch (category) {
                 case CATEGORIES_ALL:
                     break; // do nothing
+
                 case CATEGORIES_UNCATEGORIZED:
-                    if (row["full_data"].category.length !== 0)
+                    if (row["full_data"].category.length > 0)
                         return false;
                     break; // do nothing
-                default:
+
+                default: {
                     if (!useSubcategories) {
-                        if (categoryHash !== window.qBittorrent.Misc.genHash(row["full_data"].category))
+                        if (category !== row["full_data"].category)
                             return false;
                     }
                     else {
-                        const selectedCategory = category_list.get(categoryHash);
+                        const selectedCategory = categoryMap.get(category);
                         if (selectedCategory !== undefined) {
-                            const selectedCategoryName = selectedCategory.name + "/";
-                            const torrentCategoryName = row["full_data"].category + "/";
+                            const selectedCategoryName = `${category}/`;
+                            const torrentCategoryName = `${row["full_data"].category}/`;
                             if (!torrentCategoryName.startsWith(selectedCategoryName))
                                 return false;
                         }
                     }
                     break;
+                }
             }
 
-            switch (tagHash) {
+            switch (tag) {
                 case TAGS_ALL:
                     break; // do nothing
 
                 case TAGS_UNTAGGED:
-                    if (row["full_data"].tags.length !== 0)
+                    if (row["full_data"].tags.length > 0)
                         return false;
                     break; // do nothing
 
                 default: {
-                    const tagHashes = row["full_data"].tags.split(", ").map(tag => window.qBittorrent.Misc.genHash(tag));
-                    if (!tagHashes.contains(tagHash))
+                    const tags = row["full_data"].tags.split(", ");
+                    if (!tags.contains(tag))
                         return false;
                     break;
                 }
             }
 
-            switch (trackerHash) {
+            switch (tracker) {
                 case TRACKERS_ALL:
                     break; // do nothing
+
                 case TRACKERS_TRACKERLESS:
-                    if (row["full_data"].trackers_count !== 0)
+                    if (row["full_data"].trackers_count > 0)
                         return false;
                     break;
+
                 default: {
-                    const tracker = trackerList.get(trackerHash);
-                    if (tracker) {
+                    const trackerTorrentMap = trackerMap.get(tracker);
+                    if (trackerTorrentMap !== undefined) {
                         let found = false;
-                        for (const torrents of tracker.trackerTorrentMap.values()) {
+                        for (const torrents of trackerTorrentMap.values()) {
                             if (torrents.has(row["full_data"].rowId)) {
                                 found = true;
                                 break;
@@ -1615,17 +1601,17 @@ window.qBittorrent.DynamicTable ??= (() => {
             return true;
         },
 
-        getFilteredTorrentsNumber: function(filterName, categoryHash, tagHash, trackerHash) {
+        getFilteredTorrentsNumber: function(filterName, category, tag, tracker) {
             let cnt = 0;
 
             for (const row of this.rows.values()) {
-                if (this.applyFilter(row, filterName, categoryHash, tagHash, trackerHash, null))
+                if (this.applyFilter(row, filterName, category, tag, tracker, null))
                     ++cnt;
             }
             return cnt;
         },
 
-        getFilteredTorrentsHashes: function(filterName, categoryHash, tagHash, trackerHash) {
+        getFilteredTorrentsHashes: function(filterName, category, tag, tracker) {
             const rowsHashes = [];
             const useRegex = document.getElementById("torrentsFilterRegexBox").checked;
             const filterText = document.getElementById("torrentsFilterInput").value.trim().toLowerCase();
@@ -1640,7 +1626,7 @@ window.qBittorrent.DynamicTable ??= (() => {
             }
 
             for (const row of this.rows.values()) {
-                if (this.applyFilter(row, filterName, categoryHash, tagHash, trackerHash, filterTerms))
+                if (this.applyFilter(row, filterName, category, tag, tracker, filterTerms))
                     rowsHashes.push(row["rowId"]);
             }
 
@@ -1680,14 +1666,16 @@ window.qBittorrent.DynamicTable ??= (() => {
             return filteredRows;
         },
 
-        setupTr: function(tr) {
-            tr.addEventListener("dblclick", function(e) {
-                e.preventDefault();
-                e.stopPropagation();
+        setupCommonEvents: function() {
+            this.parent();
+            this.dynamicTableDiv.addEventListener("dblclick", (e) => {
+                const tr = e.target.closest("tr");
+                if (!tr)
+                    return;
 
-                this._this.deselectAll();
-                this._this.selectRow(this.rowId);
-                const row = this._this.rows.get(this.rowId);
+                this.deselectAll();
+                this.selectRow(tr.rowId);
+                const row = this.getRow(tr.rowId);
                 const state = row["full_data"].state;
 
                 const prefKey =
@@ -1707,9 +1695,7 @@ window.qBittorrent.DynamicTable ??= (() => {
                     startFN();
                 else
                     stopFN();
-                return true;
             });
-            tr.addClass("torrentsTableContextMenuTarget");
         },
 
         getCurrentTorrentID: function() {
@@ -1948,10 +1934,6 @@ window.qBittorrent.DynamicTable ??= (() => {
 
             return filteredRows;
         },
-
-        setupTr: (tr) => {
-            tr.addClass("searchTableRow");
-        }
     });
 
     const SearchPluginsTable = new Class({
@@ -1972,21 +1954,17 @@ window.qBittorrent.DynamicTable ??= (() => {
                 if (value) {
                     td.textContent = "QBT_TR(Yes)QBT_TR[CONTEXT=SearchPluginsTable]";
                     td.title = "QBT_TR(Yes)QBT_TR[CONTEXT=SearchPluginsTable]";
-                    td.getParent("tr").addClass("green");
-                    td.getParent("tr").removeClass("red");
+                    td.closest("tr").classList.add("green");
+                    td.closest("tr").classList.remove("red");
                 }
                 else {
                     td.textContent = "QBT_TR(No)QBT_TR[CONTEXT=SearchPluginsTable]";
                     td.title = "QBT_TR(No)QBT_TR[CONTEXT=SearchPluginsTable]";
-                    td.getParent("tr").addClass("red");
-                    td.getParent("tr").removeClass("green");
+                    td.closest("tr").classList.add("red");
+                    td.closest("tr").classList.remove("green");
                 }
             };
         },
-
-        setupTr: (tr) => {
-            tr.addClass("searchPluginsTableRow");
-        }
     });
 
     const TorrentTrackersTable = new Class({
@@ -2051,6 +2029,32 @@ window.qBittorrent.DynamicTable ??= (() => {
             this.columns["seeds"].compareRows = sortMixed;
             this.columns["leeches"].compareRows = sortMixed;
             this.columns["downloaded"].compareRows = sortMixed;
+
+            this.columns["status"].updateTd = function(td, row) {
+                let statusClass = "trackerUnknown";
+                const status = this.getRowValue(row);
+                switch (status) {
+                    case "QBT_TR(Disabled)QBT_TR[CONTEXT=TrackerListWidget]":
+                        statusClass = "trackerDisabled";
+                        break;
+                    case "QBT_TR(Not contacted yet)QBT_TR[CONTEXT=TrackerListWidget]":
+                        statusClass = "trackerNotContacted";
+                        break;
+                    case "QBT_TR(Working)QBT_TR[CONTEXT=TrackerListWidget]":
+                        statusClass = "trackerWorking";
+                        break;
+                    case "QBT_TR(Updating...)QBT_TR[CONTEXT=TrackerListWidget]":
+                        statusClass = "trackerUpdating";
+                        break;
+                    case "QBT_TR(Not working)QBT_TR[CONTEXT=TrackerListWidget]":
+                        statusClass = "trackerNotWorking";
+                        break;
+                }
+
+                td.className = statusClass;
+                td.textContent = status;
+                td.title = status;
+            };
         }
     });
 
@@ -2216,13 +2220,11 @@ window.qBittorrent.DynamicTable ??= (() => {
                 const id = row.rowId;
                 const value = this.getRowValue(row);
 
-                const treeImg = new Element("img", {
-                    src: "images/L.gif",
-                    styles: {
-                        "margin-bottom": -2
-                    }
-                });
-                const checkbox = new Element("input");
+                const treeImg = document.createElement("img");
+                treeImg.src = "images/L.gif";
+                treeImg.style.marginBottom = "-2px";
+
+                const checkbox = document.createElement("input");
                 checkbox.type = "checkbox";
                 checkbox.id = "cbRename" + id;
                 checkbox.setAttribute("data-id", id);
@@ -2238,7 +2240,7 @@ window.qBittorrent.DynamicTable ??= (() => {
                 checkbox.checked = (value === 0);
                 checkbox.state = checkbox.checked ? "checked" : "unchecked";
                 checkbox.indeterminate = false;
-                td.adopt(treeImg, checkbox);
+                td.replaceChildren(treeImg, checkbox);
             };
             this.columns["checked"].staticWidth = 50;
 
@@ -2256,32 +2258,26 @@ window.qBittorrent.DynamicTable ??= (() => {
                         $(fileNameId).textContent = value;
                     }
                     else {
-                        const span = new Element("span", {
-                            text: value,
-                            id: fileNameId
-                        });
-                        const dirImg = new Element("img", {
-                            src: "images/directory.svg",
-                            styles: {
-                                "width": 20,
-                                "padding-right": 5,
-                                "margin-bottom": -3,
-                                "margin-left": (node.depth * 20)
-                            },
-                            id: dirImgId
-                        });
+                        const span = document.createElement("span");
+                        span.textContent = value;
+                        span.id = fileNameId;
+
+                        const dirImg = document.createElement("img");
+                        dirImg.src = "images/directory.svg";
+                        dirImg.style.width = "20px";
+                        dirImg.style.paddingRight = "5px";
+                        dirImg.style.marginBottom = "-3px";
+                        dirImg.style.marginLeft = `${node.depth * 20}px`;
+                        dirImg.id = dirImgId;
                         td.replaceChildren(dirImg, span);
                     }
                 }
                 else { // is file
                     const value = this.getRowValue(row);
-                    const span = new Element("span", {
-                        text: value,
-                        id: fileNameId,
-                        styles: {
-                            "margin-left": ((node.depth + 1) * 20)
-                        }
-                    });
+                    const span = document.createElement("span");
+                    span.textContent = value;
+                    span.id = fileNameId;
+                    span.style.marginLeft = `${(node.depth + 1) * 20}px`;
                     td.replaceChildren(span);
                 }
             };
@@ -2292,10 +2288,9 @@ window.qBittorrent.DynamicTable ??= (() => {
                 const fileNameRenamedId = "filesTablefileRenamed" + id;
                 const value = this.getRowValue(row);
 
-                const span = new Element("span", {
-                    text: value,
-                    id: fileNameRenamedId,
-                });
+                const span = document.createElement("span");
+                span.textContent = value;
+                span.id = fileNameRenamedId;
                 td.replaceChildren(span);
             };
         },
@@ -2315,7 +2310,7 @@ window.qBittorrent.DynamicTable ??= (() => {
                     node.checked = 0;
                     node.full_data.checked = 0;
 
-                    const checkbox = tr.children[0].getElement("input");
+                    const checkbox = tr.querySelector(".RenamingCB");
                     checkbox.state = "checked";
                     checkbox.indeterminate = false;
                     checkbox.checked = true;
@@ -2444,18 +2439,7 @@ window.qBittorrent.DynamicTable ??= (() => {
                 row.full_data.remaining = (row.full_data.size * (1.0 - (row.full_data.progress / 100)));
         },
 
-        setupTr: function(tr) {
-            tr.addEventListener("keydown", function(event) {
-                switch (event.key) {
-                    case "ArrowLeft":
-                        qBittorrent.PropFiles.collapseFolder(this._this.getSelectedRowId());
-                        return false;
-                    case "ArrowRight":
-                        qBittorrent.PropFiles.expandFolder(this._this.getSelectedRowId());
-                        return false;
-                }
-            });
-        }
+        setupCommonEvents: () => {}
     });
 
     const TorrentFilesTable = new Class({
@@ -2554,13 +2538,10 @@ window.qBittorrent.DynamicTable ??= (() => {
                     window.qBittorrent.PropFiles.updateDownloadCheckbox(id, value);
                 }
                 else {
-                    const treeImg = new Element("img", {
-                        src: "images/L.gif",
-                        styles: {
-                            "margin-bottom": -2
-                        }
-                    });
-                    td.adopt(treeImg, window.qBittorrent.PropFiles.createDownloadCheckbox(id, row.full_data.fileId, value));
+                    const treeImg = document.createElement("img");
+                    treeImg.src = "images/L.gif";
+                    treeImg.style.marginBottom = "-2px";
+                    td.append(treeImg, window.qBittorrent.PropFiles.createDownloadCheckbox(id, row.full_data.fileId, value));
                 }
             };
             this.columns["checked"].staticWidth = 50;
@@ -2580,41 +2561,34 @@ window.qBittorrent.DynamicTable ??= (() => {
                         $(fileNameId).textContent = value;
                     }
                     else {
-                        const collapseIcon = new Element("img", {
-                            src: "images/go-down.svg",
-                            styles: {
-                                "margin-left": (node.depth * 20)
-                            },
-                            class: "filesTableCollapseIcon",
-                            id: collapseIconId,
-                            "data-id": id,
-                            onclick: "qBittorrent.PropFiles.collapseIconClicked(this)"
-                        });
-                        const span = new Element("span", {
-                            text: value,
-                            id: fileNameId
-                        });
-                        const dirImg = new Element("img", {
-                            src: "images/directory.svg",
-                            styles: {
-                                "width": 20,
-                                "padding-right": 5,
-                                "margin-bottom": -3
-                            },
-                            id: dirImgId
-                        });
+                        const collapseIcon = document.createElement("img");
+                        collapseIcon.src = "images/go-down.svg";
+                        collapseIcon.style.marginLeft = `${node.depth * 20}px`;
+                        collapseIcon.className = "filesTableCollapseIcon";
+                        collapseIcon.id = collapseIconId;
+                        collapseIcon.setAttribute("data-id", id);
+                        collapseIcon.addEventListener("click", function(e) { qBittorrent.PropFiles.collapseIconClicked(this); });
+
+                        const span = document.createElement("span");
+                        span.textContent = value;
+                        span.id = fileNameId;
+
+                        const dirImg = document.createElement("img");
+                        dirImg.src = "images/directory.svg";
+                        dirImg.style.width = "20px";
+                        dirImg.style.paddingRight = "5px";
+                        dirImg.style.marginBottom = "-3px";
+                        dirImg.id = dirImgId;
+
                         td.replaceChildren(collapseIcon, dirImg, span);
                     }
                 }
                 else {
                     const value = this.getRowValue(row);
-                    const span = new Element("span", {
-                        text: value,
-                        id: fileNameId,
-                        styles: {
-                            "margin-left": ((node.depth + 1) * 20)
-                        }
-                    });
+                    const span = document.createElement("span");
+                    span.textContent = value;
+                    span.id = fileNameId;
+                    span.style.marginLeft = `${(node.depth + 1) * 20}px`;
                     td.replaceChildren(span);
                 }
             };
@@ -2635,7 +2609,7 @@ window.qBittorrent.DynamicTable ??= (() => {
 
                 const progressBar = $("pbf_" + id);
                 if (progressBar === null) {
-                    td.adopt(new window.qBittorrent.ProgressBar.ProgressBar(value.toFloat(), {
+                    td.append(new window.qBittorrent.ProgressBar.ProgressBar(value.toFloat(), {
                         id: "pbf_" + id,
                         width: 80
                     }));
@@ -2654,7 +2628,7 @@ window.qBittorrent.DynamicTable ??= (() => {
                 if (window.qBittorrent.PropFiles.isPriorityComboExists(id))
                     window.qBittorrent.PropFiles.updatePriorityCombo(id, value);
                 else
-                    td.adopt(window.qBittorrent.PropFiles.createPriorityCombo(id, row.full_data.fileId, value));
+                    td.append(window.qBittorrent.PropFiles.createPriorityCombo(id, row.full_data.fileId, value));
             };
             this.columns["priority"].staticWidth = 140;
 
@@ -2782,15 +2756,22 @@ window.qBittorrent.DynamicTable ??= (() => {
                 row.full_data.remaining = (row.full_data.size * (1.0 - (row.full_data.progress / 100)));
         },
 
-        setupTr: function(tr) {
-            tr.addEventListener("keydown", function(event) {
-                switch (event.key) {
+        setupCommonEvents: function() {
+            this.parent();
+            this.dynamicTableDiv.addEventListener("keydown", (e) => {
+                const tr = e.target.closest("tr");
+                if (!tr)
+                    return;
+
+                switch (e.key) {
                     case "ArrowLeft":
-                        qBittorrent.PropFiles.collapseFolder(this._this.getSelectedRowId());
-                        return false;
+                        e.preventDefault();
+                        window.qBittorrent.PropFiles.collapseFolder(this.getSelectedRowId());
+                        break;
                     case "ArrowRight":
-                        qBittorrent.PropFiles.expandFolder(this._this.getSelectedRowId());
-                        return false;
+                        e.preventDefault();
+                        window.qBittorrent.PropFiles.expandFolder(this.getSelectedRowId());
+                        break;
                 }
             });
         }
@@ -2833,12 +2814,14 @@ window.qBittorrent.DynamicTable ??= (() => {
             }
             window.qBittorrent.Rss.showRssFeed(path);
         },
-        setupTr: function(tr) {
-            tr.addEventListener("dblclick", function(e) {
-                if (this.rowId !== 0) {
-                    window.qBittorrent.Rss.moveItem(this._this.rows.get(this.rowId).full_data.dataPath);
-                    return true;
-                }
+        setupCommonEvents: function() {
+            this.parent();
+            this.dynamicTableDiv.addEventListener("dblclick", (e) => {
+                const tr = e.target.closest("tr");
+                if (!tr || (tr.rowId === "0"))
+                    return;
+
+                window.qBittorrent.Rss.moveItem(this.getRow(tr.rowId).full_data.dataPath);
             });
         },
         updateRow: function(tr, fullUpdate) {
@@ -2892,12 +2875,12 @@ window.qBittorrent.DynamicTable ??= (() => {
                     }
                 }
                 else {
-                    td.adopt(new Element("img", {
-                        "src": img_path,
-                        "class": "stateIcon",
-                        "height": "22px",
-                        "width": "22px"
-                    }));
+                    const img = document.createElement("img");
+                    img.src = img_path;
+                    img.className = "stateIcon";
+                    img.width = "22";
+                    img.height = "22";
+                    td.append(img);
                 }
             };
         },
@@ -2934,8 +2917,8 @@ window.qBittorrent.DynamicTable ??= (() => {
             this.columns.push(column);
             this.columns[name] = column;
 
-            this.hiddenTableHeader.appendChild(new Element("th"));
-            this.fixedTableHeader.appendChild(new Element("th"));
+            this.hiddenTableHeader.append(document.createElement("th"));
+            this.fixedTableHeader.append(document.createElement("th"));
         }
     });
 
@@ -2960,26 +2943,27 @@ window.qBittorrent.DynamicTable ??= (() => {
                 if (row.rowId === rowId) {
                     articleId = row.full_data.dataId;
                     feedUid = row.full_data.feedUid;
-                    this.tableBody.rows[row.rowId].removeClass("unreadArticle");
+                    this.tableBody.rows[row.rowId].classList.remove("unreadArticle");
                     break;
                 }
             }
             window.qBittorrent.Rss.showDetails(feedUid, articleId);
         },
-        setupTr: function(tr) {
-            tr.addEventListener("dblclick", function(e) {
-                showDownloadPage([this._this.rows.get(this.rowId).full_data.torrentURL]);
-                return true;
+
+        setupCommonEvents: function() {
+            this.parent();
+            this.dynamicTableDiv.addEventListener("dblclick", (e) => {
+                const tr = e.target.closest("tr");
+                if (!tr)
+                    return;
+
+                showDownloadPage([this.getRow(tr.rowId).full_data.torrentURL]);
             });
-            tr.addClass("torrentsTableContextMenuTarget");
         },
         updateRow: function(tr, fullUpdate) {
             const row = this.rows.get(tr.rowId);
             const data = row[fullUpdate ? "full_data" : "data"];
-            if (!row.full_data.isRead)
-                tr.addClass("unreadArticle");
-            else
-                tr.removeClass("unreadArticle");
+            tr.classList.toggle("unreadArticle", !row.full_data.isRead);
 
             const tds = tr.getElements("td");
             for (let i = 0; i < this.columns.length; ++i) {
@@ -3021,8 +3005,8 @@ window.qBittorrent.DynamicTable ??= (() => {
             this.columns.push(column);
             this.columns[name] = column;
 
-            this.hiddenTableHeader.appendChild(new Element("th"));
-            this.fixedTableHeader.appendChild(new Element("th"));
+            this.hiddenTableHeader.append(document.createElement("th"));
+            this.fixedTableHeader.append(document.createElement("th"));
         }
     });
 
@@ -3034,7 +3018,7 @@ window.qBittorrent.DynamicTable ??= (() => {
 
             this.columns["checked"].updateTd = function(td, row) {
                 if ($("cbRssDlRule" + row.rowId) === null) {
-                    const checkbox = new Element("input");
+                    const checkbox = document.createElement("input");
                     checkbox.type = "checkbox";
                     checkbox.id = "cbRssDlRule" + row.rowId;
                     checkbox.checked = row.full_data.checked;
@@ -3061,10 +3045,15 @@ window.qBittorrent.DynamicTable ??= (() => {
         getFilteredAndSortedRows: function() {
             return [...this.getRowValues()];
         },
-        setupTr: function(tr) {
-            tr.addEventListener("dblclick", function(e) {
-                window.qBittorrent.RssDownloader.renameRule(this._this.rows.get(this.rowId).full_data.name);
-                return true;
+
+        setupCommonEvents: function() {
+            this.parent();
+            this.dynamicTableDiv.addEventListener("dblclick", (e) => {
+                const tr = e.target.closest("tr");
+                if (!tr)
+                    return;
+
+                window.qBittorrent.RssDownloader.renameRule(this.getRow(tr.rowId).full_data.name);
             });
         },
         newColumn: function(name, style, caption, defaultWidth, defaultVisible) {
@@ -3100,8 +3089,8 @@ window.qBittorrent.DynamicTable ??= (() => {
             this.columns.push(column);
             this.columns[name] = column;
 
-            this.hiddenTableHeader.appendChild(new Element("th"));
-            this.fixedTableHeader.appendChild(new Element("th"));
+            this.hiddenTableHeader.append(document.createElement("th"));
+            this.fixedTableHeader.append(document.createElement("th"));
         },
         selectRow: function(rowId) {
             this.selectedRows.push(rowId);
@@ -3127,7 +3116,7 @@ window.qBittorrent.DynamicTable ??= (() => {
 
             this.columns["checked"].updateTd = function(td, row) {
                 if ($("cbRssDlFeed" + row.rowId) === null) {
-                    const checkbox = new Element("input");
+                    const checkbox = document.createElement("input");
                     checkbox.type = "checkbox";
                     checkbox.id = "cbRssDlFeed" + row.rowId;
                     checkbox.checked = row.full_data.checked;
@@ -3186,8 +3175,8 @@ window.qBittorrent.DynamicTable ??= (() => {
             this.columns.push(column);
             this.columns[name] = column;
 
-            this.hiddenTableHeader.appendChild(new Element("th"));
-            this.fixedTableHeader.appendChild(new Element("th"));
+            this.hiddenTableHeader.append(document.createElement("th"));
+            this.fixedTableHeader.append(document.createElement("th"));
         },
         selectRow: () => {}
     });
@@ -3235,8 +3224,8 @@ window.qBittorrent.DynamicTable ??= (() => {
             this.columns.push(column);
             this.columns[name] = column;
 
-            this.hiddenTableHeader.appendChild(new Element("th"));
-            this.fixedTableHeader.appendChild(new Element("th"));
+            this.hiddenTableHeader.append(document.createElement("th"));
+            this.fixedTableHeader.append(document.createElement("th"));
         },
         selectRow: () => {},
         updateRow: function(tr, fullUpdate) {
@@ -3244,12 +3233,12 @@ window.qBittorrent.DynamicTable ??= (() => {
             const data = row[fullUpdate ? "full_data" : "data"];
 
             if (row.full_data.isFeed) {
-                tr.addClass("articleTableFeed");
-                tr.removeClass("articleTableArticle");
+                tr.classList.add("articleTableFeed");
+                tr.classList.remove("articleTableArticle");
             }
             else {
-                tr.removeClass("articleTableFeed");
-                tr.addClass("articleTableArticle");
+                tr.classList.remove("articleTableFeed");
+                tr.classList.add("articleTableArticle");
             }
 
             const tds = tr.getElements("td");
@@ -3281,13 +3270,13 @@ window.qBittorrent.DynamicTable ??= (() => {
         initColumnsFunctions: function() {
             this.columns["timestamp"].updateTd = function(td, row) {
                 const date = new Date(this.getRowValue(row) * 1000).toLocaleString();
-                td.set({ "text": date, "title": date });
+                td.set({ text: date, title: date });
             };
 
             this.columns["type"].updateTd = function(td, row) {
                 // Type of the message: Log::NORMAL: 1, Log::INFO: 2, Log::WARNING: 4, Log::CRITICAL: 8
                 let logLevel, addClass;
-                switch (this.getRowValue(row).toInt()) {
+                switch (Number(this.getRowValue(row))) {
                     case 1:
                         logLevel = "QBT_TR(Normal)QBT_TR[CONTEXT=ExecutionLogWidget]";
                         addClass = "logNormal";
@@ -3309,8 +3298,8 @@ window.qBittorrent.DynamicTable ??= (() => {
                         addClass = "logUnknown";
                         break;
                 }
-                td.set({ "text": logLevel, "title": logLevel });
-                td.getParent("tr").className = `logTableRow${addClass}`;
+                td.set({ text: logLevel, title: logLevel });
+                td.closest("tr").className = `logTableRow${addClass}`;
             };
         },
 
@@ -3342,12 +3331,6 @@ window.qBittorrent.DynamicTable ??= (() => {
 
             return filteredRows;
         },
-
-        setupCommonEvents: () => {},
-
-        setupTr: (tr) => {
-            tr.addClass("logTableRow");
-        }
     });
 
     const LogPeerTable = new Class({
@@ -3362,7 +3345,7 @@ window.qBittorrent.DynamicTable ??= (() => {
 
             this.columns["timestamp"].updateTd = function(td, row) {
                 const date = new Date(this.getRowValue(row) * 1000).toLocaleString();
-                td.set({ "text": date, "title": date });
+                td.set({ text: date, title: date });
             };
 
             this.columns["blocked"].updateTd = function(td, row) {
@@ -3375,8 +3358,8 @@ window.qBittorrent.DynamicTable ??= (() => {
                     status = "QBT_TR(Banned)QBT_TR[CONTEXT=ExecutionLogWidget]";
                     addClass = "peerBanned";
                 }
-                td.set({ "text": status, "title": status });
-                td.getParent("tr").className = `logTableRow${addClass}`;
+                td.set({ text: status, title: status });
+                td.closest("tr").className = `logTableRow${addClass}`;
             };
         },
 

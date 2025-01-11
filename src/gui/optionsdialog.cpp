@@ -1,6 +1,6 @@
 /*
  * Bittorrent Client using Qt and libtorrent.
- * Copyright (C) 2023-2024  Vladimir Golovnev <glassez@yandex.ru>
+ * Copyright (C) 2023-2025  Vladimir Golovnev <glassez@yandex.ru>
  * Copyright (C) 2024  Jonathan Ketchker
  * Copyright (C) 2006  Christophe Dumez <chris@qbittorrent.org>
  *
@@ -53,6 +53,7 @@
 #include "base/bittorrent/sharelimitaction.h"
 #include "base/exceptions.h"
 #include "base/global.h"
+#include "base/net/downloadmanager.h"
 #include "base/net/portforwarder.h"
 #include "base/net/proxyconfigurationmanager.h"
 #include "base/path.h"
@@ -352,6 +353,7 @@ void OptionsDialog::loadBehaviorTabOptions()
     // Groupbox's check state  must be initialized after some of its children if they are manually enabled/disabled
     m_ui->checkFileLog->setChecked(app()->isFileLoggerEnabled());
 
+    m_ui->checkBoxExternalIPStatusBar->setChecked(pref->isStatusbarExternalIPDisplayed());
     m_ui->checkBoxPerformanceWarning->setChecked(session->isPerformanceWarningEnabled());
 
     connect(m_ui->comboLanguage, qComboBoxCurrentIndexChanged, this, &ThisType::enableApplyButton);
@@ -439,6 +441,7 @@ void OptionsDialog::loadBehaviorTabOptions()
     connect(m_ui->spinFileLogAge, qSpinBoxValueChanged, this, &ThisType::enableApplyButton);
     connect(m_ui->comboFileLogAgeType, qComboBoxCurrentIndexChanged, this, &ThisType::enableApplyButton);
 
+    connect(m_ui->checkBoxExternalIPStatusBar, &QAbstractButton::toggled, this, &ThisType::enableApplyButton);
     connect(m_ui->checkBoxPerformanceWarning, &QAbstractButton::toggled, this, &ThisType::enableApplyButton);
 }
 
@@ -461,10 +464,7 @@ void OptionsDialog::saveBehaviorTabOptions() const
     pref->setLocale(locale);
 
 #ifdef Q_OS_WIN
-    if (const QVariant systemStyle = m_ui->comboStyle->currentData(); systemStyle.isValid())
-        pref->setStyle(systemStyle.toString());
-    else
-        pref->setStyle(m_ui->comboStyle->currentText());
+    pref->setStyle(m_ui->comboStyle->currentData().toString());
 #endif
 
 #ifdef QBT_HAS_COLORSCHEME_OPTION
@@ -534,6 +534,7 @@ void OptionsDialog::saveBehaviorTabOptions() const
 
     app()->setStartUpWindowState(m_ui->windowStateComboBox->currentData().value<WindowState>());
 
+    pref->setStatusbarExternalIPDisplayed(m_ui->checkBoxExternalIPStatusBar->isChecked());
     session->setPerformanceWarningEnabled(m_ui->checkBoxPerformanceWarning->isChecked());
 }
 
@@ -1148,6 +1149,10 @@ void OptionsDialog::loadBittorrentTabOptions()
     m_ui->checkEnableAddTrackers->setChecked(session->isAddTrackersEnabled());
     m_ui->textTrackers->setPlainText(session->additionalTrackers());
 
+    m_ui->checkAddTrackersFromURL->setChecked(session->isAddTrackersFromURLEnabled());
+    m_ui->textTrackersURL->setText(session->additionalTrackersURL());
+    m_ui->textTrackersFromURL->setPlainText(session->additionalTrackersFromURL());
+
     connect(m_ui->checkDHT, &QAbstractButton::toggled, this, &ThisType::enableApplyButton);
     connect(m_ui->checkPeX, &QAbstractButton::toggled, this, &ThisType::enableApplyButton);
     connect(m_ui->checkLSD, &QAbstractButton::toggled, this, &ThisType::enableApplyButton);
@@ -1181,6 +1186,9 @@ void OptionsDialog::loadBittorrentTabOptions()
 
     connect(m_ui->checkEnableAddTrackers, &QGroupBox::toggled, this, &ThisType::enableApplyButton);
     connect(m_ui->textTrackers, &QPlainTextEdit::textChanged, this, &ThisType::enableApplyButton);
+
+    connect(m_ui->checkAddTrackersFromURL, &QGroupBox::toggled, this, &ThisType::enableApplyButton);
+    connect(m_ui->textTrackersURL, &QLineEdit::textChanged, this, &ThisType::enableApplyButton);
 }
 
 void OptionsDialog::saveBittorrentTabOptions() const
@@ -1218,6 +1226,9 @@ void OptionsDialog::saveBittorrentTabOptions() const
 
     session->setAddTrackersEnabled(m_ui->checkEnableAddTrackers->isChecked());
     session->setAdditionalTrackers(m_ui->textTrackers->toPlainText());
+
+    session->setAddTrackersFromURLEnabled(m_ui->checkAddTrackersFromURL->isChecked());
+    session->setAdditionalTrackersURL(m_ui->textTrackersURL->text());
 }
 
 void OptionsDialog::loadRSSTabOptions()
@@ -1702,19 +1713,20 @@ void OptionsDialog::initializeStyleCombo()
 {
 #ifdef Q_OS_WIN
     m_ui->labelStyleHint->setText(tr("%1 is recommended for best compatibility with Windows dark mode"
-                        , "Fusion is recommended for best compatibility with Windows dark mode").arg(u"Fusion"_s));
+            , "Fusion is recommended for best compatibility with Windows dark mode").arg(u"Fusion"_s));
     m_ui->comboStyle->addItem(tr("System", "System default Qt style"), u"system"_s);
     m_ui->comboStyle->setItemData(0, tr("Let Qt decide the style for this system"), Qt::ToolTipRole);
     m_ui->comboStyle->insertSeparator(1);
 
     QStringList styleNames = QStyleFactory::keys();
     std::sort(styleNames.begin(), styleNames.end(), Utils::Compare::NaturalLessThan<Qt::CaseInsensitive>());
-    m_ui->comboStyle->addItems(styleNames);
+    for (const QString &styleName : asConst(styleNames))
+        m_ui->comboStyle->addItem(styleName, styleName);
+
     const QString prefStyleName = Preferences::instance()->getStyle();
     const QString selectedStyleName = prefStyleName.isEmpty() ? QApplication::style()->name() : prefStyleName;
-
-    if (selectedStyleName.compare(u"system"_s, Qt::CaseInsensitive) != 0)
-        m_ui->comboStyle->setCurrentText(selectedStyleName);
+    const int styleIndex = m_ui->comboStyle->findData(selectedStyleName, Qt::UserRole, Qt::MatchFixedString);
+    m_ui->comboStyle->setCurrentIndex(std::max(0, styleIndex));
 #else
     m_ui->labelStyle->hide();
     m_ui->comboStyle->hide();

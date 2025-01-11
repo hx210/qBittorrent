@@ -131,7 +131,7 @@ window.qBittorrent.PropFiles ??= (() => {
     };
 
     const createDownloadCheckbox = (id, fileId, checked) => {
-        const checkbox = new Element("input");
+        const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.id = "cbPrio" + id;
         checkbox.setAttribute("data-id", id);
@@ -179,7 +179,7 @@ window.qBittorrent.PropFiles ??= (() => {
         select.id = "comboPrio" + id;
         select.setAttribute("data-id", id);
         select.setAttribute("data-file-id", fileId);
-        select.addClass("combo_priority");
+        select.classList.add("combo_priority");
         select.addEventListener("change", fileComboboxChanged);
 
         select.appendChild(createOption(FilePriority.Ignored, (FilePriority.Ignored === selectedPriority), "QBT_TR(Do not download)QBT_TR[CONTEXT=PropListDelegate]"));
@@ -197,7 +197,7 @@ window.qBittorrent.PropFiles ??= (() => {
 
     const updatePriorityCombo = (id, selectedPriority) => {
         const combobox = $("comboPrio" + id);
-        if (parseInt(combobox.value, 10) !== selectedPriority)
+        if (Number(combobox.value) !== selectedPriority)
             selectComboboxPriority(combobox, selectedPriority);
     };
 
@@ -205,7 +205,7 @@ window.qBittorrent.PropFiles ??= (() => {
         const options = combobox.options;
         for (let i = 0; i < options.length; ++i) {
             const option = options[i];
-            if (parseInt(option.value, 10) === priority)
+            if (Number(option.value) === priority)
                 option.selected = true;
             else
                 option.selected = false;
@@ -308,18 +308,20 @@ window.qBittorrent.PropFiles ??= (() => {
         clearTimeout(loadTorrentFilesDataTimer);
         loadTorrentFilesDataTimer = -1;
 
-        new Request({
-            url: "api/v2/torrents/filePrio",
-            method: "post",
-            data: {
-                "hash": current_hash,
-                "id": fileIds.join("|"),
-                "priority": priority
-            },
-            onComplete: () => {
+        fetch("api/v2/torrents/filePrio", {
+                method: "POST",
+                body: new URLSearchParams({
+                    hash: current_hash,
+                    id: fileIds.join("|"),
+                    priority: priority
+                })
+            })
+            .then((response) => {
+                if (!response.ok)
+                    return;
+
                 loadTorrentFilesDataTimer = loadTorrentFilesData.delay(1000);
-            }
-        }).send();
+            });
 
         const ignore = (priority === FilePriority.Ignored);
         ids.forEach((_id) => {
@@ -335,8 +337,8 @@ window.qBittorrent.PropFiles ??= (() => {
 
     let loadTorrentFilesDataTimer = -1;
     const loadTorrentFilesData = () => {
-        if ($("propFiles").hasClass("invisible")
-            || $("propertiesPanel_collapseToggle").hasClass("panel-expand")) {
+        if ($("propFiles").classList.contains("invisible")
+            || $("propertiesPanel_collapseToggle").classList.contains("panel-expand")) {
             // Tab changed, don't do anything
             return;
         }
@@ -352,16 +354,21 @@ window.qBittorrent.PropFiles ??= (() => {
             current_hash = new_hash;
             loadedNewTorrent = true;
         }
-        const url = new URI("api/v2/torrents/files?hash=" + current_hash);
-        new Request.JSON({
-            url: url,
-            method: "get",
-            noCache: true,
-            onComplete: () => {
-                clearTimeout(loadTorrentFilesDataTimer);
-                loadTorrentFilesDataTimer = loadTorrentFilesData.delay(5000);
-            },
-            onSuccess: (files) => {
+
+        const url = new URL("api/v2/torrents/files", window.location);
+        url.search = new URLSearchParams({
+            hash: current_hash
+        });
+        fetch(url, {
+                method: "GET",
+                cache: "no-store"
+            })
+            .then(async (response) => {
+                if (!response.ok)
+                    return;
+
+                const files = await response.json();
+
                 clearTimeout(torrentFilesFilterInputTimer);
                 torrentFilesFilterInputTimer = -1;
 
@@ -373,8 +380,11 @@ window.qBittorrent.PropFiles ??= (() => {
                     if (loadedNewTorrent)
                         collapseAllNodes();
                 }
-            }
-        }).send();
+            })
+            .finally(() => {
+                clearTimeout(loadTorrentFilesDataTimer);
+                loadTorrentFilesDataTimer = loadTorrentFilesData.delay(5000);
+            });
     };
 
     const updateData = () => {
@@ -575,7 +585,7 @@ window.qBittorrent.PropFiles ??= (() => {
             paddingHorizontal: 0,
             width: 800,
             height: 420,
-            resizeLimit: { "x": [800], "y": [420] }
+            resizeLimit: { x: [800], y: [420] }
         });
     };
 
@@ -623,13 +633,13 @@ window.qBittorrent.PropFiles ??= (() => {
     // inject checkbox into table header
     const tableHeaders = $$("#torrentFilesTableFixedHeaderDiv .dynamicTableHeader th");
     if (tableHeaders.length > 0) {
-        const checkbox = new Element("input");
+        const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.id = "tristate_cb";
         checkbox.addEventListener("click", switchCheckboxState);
 
         const checkboxTH = tableHeaders[0];
-        checkbox.injectInside(checkboxTH);
+        checkboxTH.append(checkbox);
     }
 
     // default sort by name column
@@ -668,10 +678,7 @@ window.qBittorrent.PropFiles ??= (() => {
         if (span === null)
             return;
         const rowElem = span.parentElement.parentElement;
-        if (shouldHide)
-            rowElem.addClass("invisible");
-        else
-            rowElem.removeClass("invisible");
+        rowElem.classList.toggle("invisible", shouldHide);
     };
 
     /**
@@ -689,10 +696,7 @@ window.qBittorrent.PropFiles ??= (() => {
 
         // rotate the collapse icon
         const collapseIcon = td.getElementsByClassName("filesTableCollapseIcon")[0];
-        if (isCollapsed)
-            collapseIcon.addClass("rotate");
-        else
-            collapseIcon.removeClass("rotate");
+        collapseIcon.classList.toggle("rotate", isCollapsed);
     };
 
     const _isCollapsed = (node) => {
